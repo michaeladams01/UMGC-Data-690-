@@ -14,6 +14,11 @@ warnings.filterwarnings("ignore")
 print("All libraries imported successfully!")
 filepath = "C:\\Users\\Adams\\Downloads\\Model\\loan.csv"
 df = pd.read_csv(filepath, low_memory=False)
+# Right after read_csv
+print(df.shape)
+print(df.dtypes.value_counts())
+print(df.isnull().mean().sort_values(ascending=False).head(20))
+print(df['loan_status'].value_counts())
 
 # =====================================================================
 # 1. INITIAL CLEANING & TARGET ENCODING
@@ -23,7 +28,7 @@ df = df.drop(columns=['id', 'member_id', 'url', 'desc', 'title', 'zip_code', 'ou
 	'total_rec_prncp', 'total_rec_int', 'total_rec_late_fee', 
 	'recoveries', 'collection_recovery_fee', 'last_pymnt_amnt', 
 	'hardship_flag', 'debt_settlement_flag', 'funded_amnt', 'funded_amnt_inv',
-	'issue_d'], errors='ignore')
+	'issue_d','sub_grade', 'pymnt_plan'], errors='ignore')
 
 # Drops columns missing more than 50% of their data
 df = df.dropna(thresh=int(0.5 * len(df)), axis=1)
