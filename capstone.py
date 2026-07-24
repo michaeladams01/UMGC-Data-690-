@@ -1,164 +1,241 @@
+"""
+DATA 690 Capstone - Loan Default Prediction
+Units 4-5: Data Selection & Descriptive Analysis + Data Visualizations
+Author: Michael A. Adams
+
+This script covers everything completed through the "Data Visualizations" write-up:
+  1. Data acquisition / load
+  2. Target variable formulation (Fully Paid -> 0, Charged Off -> 1)
+  3. Sparsity management (drop columns missing > 50% of data)
+  4. Descriptive statistics for core continuous features
+  5. Data Visualization 1: Pearson correlation heatmap
+  6. Data Visualization 2: Box plot of interest rate by loan status + Welch's t-test
+  7. Data Visualization 3: Stacked bar chart of loan volume/defaults by grade + chi-square test
+
+NOTE: All EDA here is run on the RAW, pre-split dataset for sanity-checking purposes
+only (distributions, class balance, obvious data issues). Any descriptive statistics
+used to inform feature engineering decisions for modeling should be recomputed on the
+TRAINING split only, after train/test split, to avoid data leakage.
+"""
+from statsmodels.stats.outliers_influence import variance_inflation_factor
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-import statsmodels.api as sm 
-from scipy.stats import chi2_contingency
-from scipy.stats import ttest_ind 
-from sklearn.model_selection import train_test_split
-import warnings
+from scipy import stats
 
-# Suppress warnings for clean output
-warnings.filterwarnings("ignore")
+sns.set_style("whitegrid")
 
-print("All libraries imported successfully!")
-filepath = "C:\\Users\\Adams\\Downloads\\Model\\loan.csv"
-df = pd.read_csv(filepath, low_memory=False)
-# Right after read_csv
-print(df.shape)
-print(df.dtypes.value_counts())
-print(df.isnull().mean().sort_values(ascending=False).head(20))
-print(df['loan_status'].value_counts())
+# -----------------------------------------------------------------------
+# 1. Data Acquisition
+# -----------------------------------------------------------------------
+# Update this path to wherever the LendingClub CSV lives in your environment
+# (local path, Google Drive mount, or Colab upload).
+DATA_PATH = r"C:\Users\Adams\Downloads\Model\loan.csv"
 
-# =====================================================================
-# 1. INITIAL CLEANING & TARGET ENCODING
-# =====================================================================
-# Initial dropping of irrelevant, leaky, or sparse columns
-df = df.drop(columns=['id', 'member_id', 'url', 'desc', 'title', 'zip_code', 'out_prncp', 'out_prncp_inv', 'total_pymnt', 'total_pymnt_inv', 
-	'total_rec_prncp', 'total_rec_int', 'total_rec_late_fee', 
-	'recoveries', 'collection_recovery_fee', 'last_pymnt_amnt', 
-	'hardship_flag', 'debt_settlement_flag', 'funded_amnt', 'funded_amnt_inv',
-	'issue_d','sub_grade', 'pymnt_plan'], errors='ignore')
+df_raw = pd.read_csv(DATA_PATH, low_memory=False)
+print(f"Raw shape: {df_raw.shape}")
 
-# Drops columns missing more than 50% of their data
-df = df.dropna(thresh=int(0.5 * len(df)), axis=1)
+# -----------------------------------------------------------------------
+# 2. Target Variable Formulation
+# -----------------------------------------------------------------------
+# Only loans with a terminal status are usable for a binary default classifier.
+terminal_statuses = ["Fully Paid", "Charged Off"]
+df = df_raw[df_raw["loan_status"].isin(terminal_statuses)].copy()
 
-# Define and clean Target Variable
-bad_statuses = ['Charged Off', 'Default', 'Does not meet the credit policy. Status:Charged Off', 'Late (31-120 days)']
-df = df[~df['loan_status'].isin(['Current', 'In Grace Period', 'Late (16-30 days)'])]
-df['loan_status'] = df['loan_status'].apply(lambda x: 1 if x in bad_statuses else 0)
-
-# =====================================================================
-# 2. OPTION 4: TRAIN / TEST SPLIT
-# =====================================================================
-X = df.drop('loan_status', axis=1)
-y = df['loan_status']
-
-X_train, X_test, y_train, y_test = train_test_split(
-	X, y, test_size=0.20, stratify=y, random_state=42
+df["loan_status_binary"] = df["loan_status"].map(
+    {"Fully Paid": 0, "Charged Off": 1}
 )
 
-# Recombine training data for analysis
-train_data = pd.concat([X_train, y_train], axis=1)
+print(f"Shape after filtering to terminal loans: {df.shape}")
 
-# =====================================================================
-# 3. DESCRIPTIVE STATISTICS (For your Word Template)
-# =====================================================================
-print("\n" + "="*50)
-print("--- DESCRIPTIVE STATISTICS FOR PROJECT TEMPLATE ---")
-print("="*50)
+status_counts = df["loan_status_binary"].value_counts().sort_index()
+status_pct = df["loan_status_binary"].value_counts(normalize=True).sort_index()
+status_summary = pd.DataFrame({"Count": status_counts, "Proportion": status_pct.round(4)})
+status_summary.index = ["Fully Paid (0)", "Charged Off (1)"]
+print("\nTarget variable distribution:")
+print(status_summary)
 
-print(f"Total historical loans analyzed: {len(df):,}")
-print(f"Loans allocated to Training (80%): {len(train_data):,}")
-print(f"Loans allocated to Testing (20%): {len(X_test):,}")
+# -----------------------------------------------------------------------
+# 3. Sparsity and Missing Data Management
+# -----------------------------------------------------------------------
+missing_frac = df.isna().mean().sort_values(ascending=False)
+cols_to_drop = missing_frac[missing_frac > 0.50].index.tolist()
 
-default_count = train_data['loan_status'].sum()
-default_rate = (default_count / len(train_data)) * 100
-print(f"\nTraining Set Default Rate: {default_rate:.2f}% ({default_count:,} defaults)")
+print(f"Columns dropped (>50% missing): {len(cols_to_drop)} of {df.shape[1]}")
+df = df.drop(columns=cols_to_drop)
+print(f"Shape after sparsity thresholding: {df.shape}")
 
-# Summary of key continuous variables
-key_numeric_cols = ['loan_amnt', 'int_rate', 'annual_inc', 'dti', 'fico_range_low']
-available_num_cols = [col for col in key_numeric_cols if col in train_data.columns]
+# -----------------------------------------------------------------------
+# 4. Descriptive Statistics (core continuous financial variables)
+# -----------------------------------------------------------------------
+core_vars = ["loan_amnt", "int_rate", "annual_inc", "dti"]
+desc_stats = df[core_vars].agg(["min", "max", "mean", "std"]).T
+desc_stats.columns = ["Minimum", "Maximum", "Mean", "Standard Deviation"]
+print("\nDescriptive Statistics:")
+print(desc_stats.round(2))
 
-print("\n--- Overall Summary of Key Financial Variables ---")
-print(train_data[available_num_cols].describe().round(2).loc[['mean', 'std', 'min', '50%', 'max']])
+# Stratify means against the target to confirm the baseline credit-risk story
+strat_means = df.groupby("loan_status_binary")[core_vars].mean().round(2)
+print("\nMeans by loan_status_binary (0=Fully Paid, 1=Charged Off):")
+print(strat_means)
 
-print("\n--- Stratified Means: Default (1) vs Fully Paid (0) ---")
-stratified_means = train_data.groupby('loan_status')[available_num_cols].mean().round(2)
-print(stratified_means.T)
-print("="*50 + "\n")
+# -----------------------------------------------------------------------
+# 4b. Supplemental Visualization: Class Imbalance (target variable)
+# -----------------------------------------------------------------------
+plt.figure(figsize=(6, 6))
+ax = status_counts.rename(index={0: "Fully Paid (0)", 1: "Charged Off (1)"}).plot(
+    kind="bar", color=["#4C9A8E", "#E07B54"]
+)
+for i, v in enumerate(status_counts.values):
+    ax.text(i, v + 5000, f"{v:,}\n({status_pct.values[i]*100:.1f}%)",
+            ha="center", va="bottom", fontsize=10)
+plt.title("Class Distribution of Target Variable (loan_status_binary)")
+plt.xlabel("Loan Resolution Status")
+plt.ylabel("Total Count of Loans")
+plt.xticks(rotation=0)
+plt.tight_layout()
+plt.savefig("viz0_class_imbalance.png", dpi=150)
+plt.show()
 
-# =====================================================================
-# 4. AUTOMATED UNIVARIABLE SCREENING (Purposeful Selection)
-# =====================================================================
-print("Starting Automated Univariable Screening (This takes a moment)...")
+# -----------------------------------------------------------------------
+# 4c. Supplemental Visualization: Missing Data by Column (pre-drop)
+# -----------------------------------------------------------------------
+# Recomputed against the raw, pre-filter dataframe to show the actual
+# missingness landscape that justified the 50% drop threshold.
+missing_frac_raw = df_raw.isna().mean().sort_values(ascending=False)
+top_missing = missing_frac_raw.head(20)
 
-candidate_vars = []
-rejected_vars = []
+plt.figure(figsize=(8, 8))
+colors = ["#B03A2E" if v > 0.50 else "#5DADE2" for v in top_missing.values]
+plt.barh(top_missing.index[::-1], top_missing.values[::-1] * 100, color=colors[::-1])
+plt.axvline(50, color="black", linestyle="--", linewidth=1, label="50% drop threshold")
+plt.xlabel("Percent Missing (%)")
+plt.title("Top 20 Columns by Missing Data Percentage")
+plt.legend()
+plt.tight_layout()
+plt.savefig("viz0b_missingness.png", dpi=150)
+plt.show()
 
-# Screen Categorical (Chi-Square)
-cat_cols = train_data.select_dtypes(include=['object', 'str']).columns
-for col in cat_cols:
-	if col == 'loan_status': continue
-	contingency_table = pd.crosstab(train_data[col], train_data['loan_status'])
-	if contingency_table.shape[0] < 2:
-		rejected_vars.append(col)
-		continue
-	chi2_stat, p_val, dof, expected = chi2_contingency(contingency_table)
-	if p_val < 0.25:
-		candidate_vars.append((col, 'Categorical', p_val))
-	else:
-		rejected_vars.append(col)
+print(f"\nColumns exceeding 50% missing (dropped): {(missing_frac_raw > 0.50).sum()} of {df_raw.shape[1]}")
 
-# Screen Continuous (Logistic Regression)
-num_cols = train_data.select_dtypes(include=['int64', 'float64']).columns
-for col in num_cols:
-	if col == 'loan_status': continue
-	temp_data = train_data[[col, 'loan_status']].dropna()
-	if len(temp_data) == 0: continue
-	
-	X_cont = sm.add_constant(temp_data[col])
-	y_cont = temp_data['loan_status']
-	try:
-		model = sm.Logit(y_cont, X_cont).fit(disp=0)
-		if model.pvalues[col] < 0.25:
-			candidate_vars.append((col, 'Continuous', model.pvalues[col]))
-		else:
-			rejected_vars.append(col)
-	except:
-		rejected_vars.append(col)
+# -----------------------------------------------------------------------
+# 5. Data Visualization 1: Pearson Correlation Heatmap
+# -----------------------------------------------------------------------
+heatmap_vars = ["loan_amnt", "int_rate", "annual_inc", "dti", "installment"]
+corr_matrix = df[heatmap_vars].corr(method="pearson")
 
-candidates_df = pd.DataFrame(candidate_vars, columns=['Variable', 'Type', 'P-Value'])
-print(f"\nScreening Complete! Kept {len(candidates_df)} candidates. Rejected {len(rejected_vars)} variables.")
+plt.figure(figsize=(7, 6))
+sns.heatmap(
+    corr_matrix,
+    annot=True,
+    fmt=".2f",
+    cmap="coolwarm",
+    vmin=-1, vmax=1,
+    square=True,
+    cbar_kws={"label": "Pearson r"},
+)
+plt.title("Pearson Correlation Heatmap of Primary Financial Features")
+plt.tight_layout()
+plt.savefig("viz1_correlation_heatmap.png", dpi=150)
+plt.show()
 
-# =====================================================================
-# 5. MULTIVARIABLE MODEL PREPARATION
-# =====================================================================
-surviving_vars = candidates_df['Variable'].tolist()
-X_candidates = train_data[surviving_vars]
+print(f"\nloan_amnt vs installment correlation: {corr_matrix.loc['loan_amnt', 'installment']:.3f}")
 
-# Filter High Cardinality and Leaky dates to prevent memory crash
-high_cardinality_cols = [col for col in X_candidates.select_dtypes(include=['object', 'str']).columns if X_candidates[col].nunique() > 50]
-manual_drops = ['last_pymnt_d', 'last_credit_pull_d', 'earliest_cr_line', 'issue_d', 'addr_state']
-cols_to_drop = list(set(high_cardinality_cols + manual_drops))
+# -----------------------------------------------------------------------
+# 6. Data Visualization 2: Box Plot of Interest Rate by Loan Status
+# -----------------------------------------------------------------------
+plt.figure(figsize=(7, 6))
+sns.boxplot(
+    data=df,
+    x="loan_status_binary",
+    y="int_rate",
+    hue="loan_status_binary",
+    palette={0: "#4C9A8E", 1: "#E07B54"},
+    legend=False,
+)
+plt.xticks([0, 1], ["Fully Paid (0)", "Charged Off (1)"])
+plt.xlabel("Loan Resolution Status")
+plt.ylabel("Interest Rate (%)")
+plt.title("Distribution of Interest Rates by Loan Status")
+plt.tight_layout()
+plt.savefig("viz2_boxplot_interest_rate.png", dpi=150)
+plt.show()
 
-final_surviving_vars = [var for var in surviving_vars if var not in cols_to_drop]
-X_candidates_clean = train_data[final_surviving_vars].copy()
-y_train = train_data['loan_status']
+# Welch's Two-Sample T-Test (unequal variances assumed)
+paid = df.loc[df["loan_status_binary"] == 0, "int_rate"].dropna()
+charged_off = df.loc[df["loan_status_binary"] == 1, "int_rate"].dropna()
+t_stat, p_val = stats.ttest_ind(charged_off, paid, equal_var=False)
 
-print(f"\nFeatures remaining for Multivariable Model: {len(final_surviving_vars)}")
+print(f"\nMedian int_rate - Fully Paid: {paid.median():.2f}%")
+print(f"Median int_rate - Charged Off: {charged_off.median():.2f}%")
+print(f"Welch's t-test: t = {t_stat:.3f}, p = {p_val:.4g}")
 
-# --- CRITICAL IMPUTATION STEP ---
-print("Imputing missing values to prevent model crash...")
-num_cols_clean = X_candidates_clean.select_dtypes(include=['int64', 'float64']).columns
-cat_cols_clean = X_candidates_clean.select_dtypes(include=['object', 'str']).columns
+# -----------------------------------------------------------------------
+# 6b. Supplemental Visualization: Box Plot of DTI by Loan Status
+# -----------------------------------------------------------------------
+plt.figure(figsize=(7, 6))
+sns.boxplot(
+    data=df,
+    x="loan_status_binary",
+    y="dti",
+    hue="loan_status_binary",
+    palette={0: "#4C9A8E", 1: "#E07B54"},
+    legend=False,
+)
+plt.ylim(-5, 50)  # dti has extreme outliers (max 999); clip for readability
+plt.xticks([0, 1], ["Fully Paid (0)", "Charged Off (1)"])
+plt.xlabel("Loan Resolution Status")
+plt.ylabel("Debt-to-Income Ratio")
+plt.title("Distribution of Debt-to-Income Ratio by Loan Status")
+plt.tight_layout()
+plt.savefig("viz2b_boxplot_dti.png", dpi=150)
+plt.show()
 
-for col in num_cols_clean:
-	X_candidates_clean[col] = X_candidates_clean[col].fillna(X_candidates_clean[col].median())
-for col in cat_cols_clean:
-	X_candidates_clean[col] = X_candidates_clean[col].fillna('Missing')
+dti_paid = df.loc[df["loan_status_binary"] == 0, "dti"].dropna()
+dti_charged_off = df.loc[df["loan_status_binary"] == 1, "dti"].dropna()
+t_stat_dti, p_val_dti = stats.ttest_ind(dti_charged_off, dti_paid, equal_var=False)
+print(f"\nMedian DTI - Fully Paid: {dti_paid.median():.2f}")
+print(f"Median DTI - Charged Off: {dti_charged_off.median():.2f}")
+print(f"Welch's t-test (DTI): t = {t_stat_dti:.3f}, p = {p_val_dti:.4g}")
 
-# Encode text into 1s and 0s
-X_encoded = pd.get_dummies(X_candidates_clean, drop_first=True).astype(float)
-X_encoded = sm.add_constant(X_encoded) 
+# -----------------------------------------------------------------------
+# 7. Data Visualization 3: Stacked Bar Chart of Loan Grade vs Default Status
+# -----------------------------------------------------------------------
+grade_status = pd.crosstab(df["grade"], df["loan_status_binary"])
+grade_status = grade_status.reindex(sorted(grade_status.index))  # A-G order
+grade_status.columns = ["Fully Paid (0)", "Charged Off (1)"]
 
-# =====================================================================
-# 6. FIT INITIAL MULTIVARIABLE MODEL
-# =====================================================================
-print("\nFitting the Multivariable Model... (This will take a minute or two)")
-try:
-	multi_model = sm.Logit(y_train, X_encoded).fit(disp=0)
-	print("\n--- INITIAL MULTIVARIABLE MODEL SUMMARY ---")
-	print(multi_model.summary())
-except Exception as e:
-	print(f"Model fitting failed: {e}")
+ax = grade_status.plot(
+    kind="bar",
+    stacked=True,
+    color=["#F4D03F", "#4A235A"],
+    figsize=(8, 6),
+)
+plt.title("Loan Volume and Default Proportion by Assigned Loan Grade")
+plt.xlabel("Lending Club Assigned Loan Grade (A=Prime, G=Subprime)")
+plt.ylabel("Total Count of Loans")
+plt.legend(title="Loan Status")
+plt.tight_layout()
+plt.savefig("viz3_stacked_bar_grade.png", dpi=150)
+plt.show()
+
+# Pearson Chi-Square Test of Independence: grade vs default status
+chi2, chi_p, dof, expected = stats.chi2_contingency(grade_status)
+print(f"\nChi-Square test (grade vs default): chi2 = {chi2:.2f}, p = {chi_p:.4g}, dof = {dof}")
+
+print("\nEDA through Data Visualizations complete.")
+
+#-----------------------------------------------------------------------
+# 8. Variable Selection Summary (post spartity-threshold, pre-feature engineering)
+#-----------------------------------------------------------------------
+print(f"\nTotal columns remaining after 50% missing drop: {df.shape[1]}" )
+print("\nColumns remaining:" )
+for col in df.columns:
+    print(f" - {col} ({df[col].dtype})")
+
+X_numeric = df[numeric_candidate_cols].dropna()
+vif_data = pd.DataFrame()
+vif_data["feature"] = X_numeric.columns
+vif_data["VIF"] = [variance_inflation_factor(X_numeric.values, i) for i in range(X_numeric.shape[1])]
+print(vif_data.sort_values("VIF", ascending=False))
