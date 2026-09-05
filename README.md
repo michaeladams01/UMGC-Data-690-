@@ -5,6 +5,8 @@
 
 <p>Data Visualizations:</p>
 <img width="1744" height="902" alt="image" src="https://github.com/user-attachments/assets/1bcbe852-0253-40bb-a123-91becb943678" />
+<img width="931" height="784" alt="image" src="https://github.com/user-attachments/assets/26bc2527-fc6c-4fd1-82ee-92df88be79c4" />
+
 
 
 
